@@ -54,6 +54,49 @@ async function run() {
         // Reset Password Expire Collection 
         const expireCollection = database.collection("expire")
 
+        // verify token middleware
+        const verifyToken = (req, res, next) => {
+            // console.log("Inside the verify token");
+            // console.log("received request:", req?.headers?.authorization);
+            if (!req?.headers?.authorization) {
+                return res.status(401).json({ message: "Unauthorized Access!" });
+            }
+
+            // get token from the headers 
+            const token = req?.headers?.authorization;
+            // console.log("Received Token", token);
+
+            jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+                if (err) {
+                    console.error('JWT Verification Error:', err.message);
+                    return res.status(401).json({ message: err.message });
+                }
+                // console.log('Decoded Token:', decoded);
+                req.user = decoded;
+                next();
+            })
+        }
+
+        // verify admin middleware after verify token
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.user.email;
+            const query = { email: email };
+            const user = await usersCollection.findOne(query);
+            const isAdmin = user?.role === 'admin';
+            if (!isAdmin) {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            next();
+        }
+
+        // JWT token create and remove APIS
+        // JWT token create API 
+        app.post('/jwt/create', async (req, res) => {
+            const user = req.body;
+            const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '7h' });
+            res.send({ token })
+        })
+
         // Create quiz API
         app.post('/generate-quiz', async (req, res) => {
             try {
@@ -599,6 +642,7 @@ async function run() {
                     };
                 }));
 
+                // with author name 
                 const quizzesWithAuthorName = await Promise.all(quizzes.map(async (quiz) => {
                     const author = await usersCollection.findOne({ email: quiz.user })
 
@@ -608,11 +652,29 @@ async function run() {
                     }
                 }))
 
+                // Month wish user counting 
+                const now = new Date();
+
+                // Start of current month
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+                // Start of next month
+                const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+                // Find users created this month
+                const monthWishUsers = await usersCollection.find({
+                    creationTime: {
+                        $gte: startOfMonth,
+                        $lt: startOfNextMonth
+                    }
+                }).toArray();
+
                 res.json({
                     status: true,
                     users: usersWithQuizCounts.length === 0 ? [] : usersWithQuizCounts,
                     quizzes: quizzesWithAuthorName.length === 0 ? [] : quizzesWithAuthorName,
-                    solvedQuizzes: solvedQuizzes.length === 0 ? [] : solvedQuizzes
+                    solvedQuizzes: solvedQuizzes.length === 0 ? [] : solvedQuizzes,
+                    monthWishUsers
                 });
 
             } catch (error) {
