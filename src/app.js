@@ -421,6 +421,118 @@ async function run() {
             });
         });
 
+        // update user info API 
+        app.patch('/user/update/profile/:id', async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ status: false, message: "Invalid user ID" });
+                }
+
+                const body = req.body;
+                const updatedDoc = {
+                    $set: {
+                        username: body?.username,
+                        phone: body?.phone,
+                    }
+                };
+
+                const result = await usersCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    updatedDoc
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ status: false, message: "User not found" });
+                }
+
+                res.status(200).json({
+                    status: true,
+                    message: "User profile updated successfully",
+                    result
+                });
+            } catch (error) {
+                console.error("Error updating user profile:", error);
+                res.status(500).json({
+                    status: false,
+                    message: "Something went wrong",
+                    error: error.message
+                });
+            }
+        });
+
+        // delete user from db API 
+        app.delete('/user/delete/:id', async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ status: false, message: "Invalid user ID" });
+                }
+
+                const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).json({ status: false, message: "User not found" });
+                }
+
+                res.status(200).json({
+                    status: true,
+                    message: "User deleted successfully",
+                    result
+                });
+            } catch (error) {
+                console.error("Error deleting user:", error);
+                res.status(500).json({
+                    status: false,
+                    message: "Something went wrong",
+                    error: error.message
+                });
+            }
+        });
+
+        // change role of user API 
+        app.patch('/user/role/change/:id', async (req, res) => {
+            try {
+                const id = req.params.id;
+                const user = await usersCollection.findOne({ _id: new ObjectId(id) })
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ status: false, message: "Invalid user ID" });
+                }
+
+                if (!role) {
+                    return res.status(400).json({ status: false, message: "Role is required" });
+                }
+
+                const updatedDoc = {
+                    $set: {
+                        role: user?.role == "admin" ? "user" : "admin"
+                    }
+                };
+
+                const result = await usersCollection.updateOne({ _id: new ObjectId(id) }, updatedDoc);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ status: false, message: "User not found" });
+                }
+
+                res.status(200).json({
+                    status: true,
+                    message: "User role updated successfully",
+                    result
+                });
+            } catch (error) {
+                console.error("Error updating user role:", error);
+                res.status(500).json({
+                    status: false,
+                    message: "Something went wrong",
+                    error: error.message
+                });
+            }
+        });
+
         // reset password API
         app.get("/reset-password/:email", async (req, res) => {
             const email = req.params.email;
@@ -658,14 +770,12 @@ async function run() {
                 const quizzes = await quizzesCollection.find().toArray();
                 const solvedQuizzes = await quizzesCollection.find({ status: "solved" }).toArray();
 
-                // For each user, count their quizzes
                 const usersWithQuizCounts = await Promise.all(users.map(async (user) => {
                     const quizCount = await quizzesCollection.countDocuments({ user: user.email });
-                    const lastActive = new Date(user.lastLoginTime)
-                    const now = new Date()
-                    const diffInMs = now.getTime() - lastActive.getTime()
-                    const diffInHours = diffInMs / (1000 * 60 * 60)
-                    const userStatus = diffInHours > 24 ? "offline" : "online"
+                    const lastActive = new Date(user.lastLoginTime);
+                    const now = new Date();
+                    const diffInHours = (now - lastActive) / (1000 * 60 * 60);
+                    const userStatus = diffInHours > 24 ? "offline" : "online";
                     return {
                         ...user,
                         totalQuizzes: quizCount,
@@ -673,30 +783,25 @@ async function run() {
                     };
                 }));
 
-                // with author name 
                 const quizzesWithAuthorName = await Promise.all(quizzes.map(async (quiz) => {
-                    const author = await usersCollection.findOne({ email: quiz.user })
-
+                    const author = await usersCollection.findOne({ email: quiz.user });
                     return {
                         ...quiz,
                         author: author?.username
-                    }
-                }))
+                    };
+                }));
 
-                // Month wish user counting 
                 const now = new Date();
-
-                // Start of current month
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-                // Start of next month
                 const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
-                // Find users created this month
+                // This works for both string and Date creationTime
                 const monthWishUsers = await usersCollection.find({
-                    creationTime: {
-                        $gte: startOfMonth,
-                        $lt: startOfNextMonth
+                    $expr: {
+                        $and: [
+                            { $gte: [{ $dateFromString: { dateString: "$creationTime" } }, startOfMonth] },
+                            { $lt: [{ $dateFromString: { dateString: "$creationTime" } }, startOfNextMonth] }
+                        ]
                     }
                 }).toArray();
 
@@ -705,7 +810,9 @@ async function run() {
                     users: usersWithQuizCounts.length === 0 ? [] : usersWithQuizCounts,
                     quizzes: quizzesWithAuthorName.length === 0 ? [] : quizzesWithAuthorName,
                     solvedQuizzes: solvedQuizzes.length === 0 ? [] : solvedQuizzes,
-                    monthWishUsers
+                    monthWishUsers,
+                    startOfMonth,
+                    startOfNextMonth
                 });
 
             } catch (error) {
