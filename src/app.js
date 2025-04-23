@@ -56,6 +56,9 @@ async function run() {
         // Reset Password Expire Collection
         const expireCollection = database.collection("expire");
 
+        // Quiz Set Collection For Teacher 
+        const quizSet = database.collection("quizset")
+
         // verify token middleware
         const verifyToken = (req, res, next) => {
             // console.log("Inside the verify token");
@@ -175,10 +178,38 @@ async function run() {
             }
         });
 
+        // Create quiz API for Teacher API
+        app.post('/teacher/generate-quiz', async (req, res) => {
+            try {
+                const { user, ...teacherCreatedQuiz } = req.body
+
+                const userExist = await usersCollection.findOne({ email: user })
+                // if(userExist?.role=="teacher")
+                const result = await quizSet.insertOne(req.body)
+                const insertedQuiz = await quizSet.findOne({ _id: new ObjectId(result?.insertedId) })
+                res.json({
+                    status: true,
+                    result,
+                    insertedQuiz
+                })
+            }
+            catch (err) {
+                console.error("❌ Error checking quiz:", err);
+                res.status(500).json({ status: false, message: err.message });
+            }
+        })
+
         // get the quiz set that user just created API
         app.get("/get-quiz-set/:id", async (req, res) => {
             const id = req.params.id;
             const result = await quizzesCollection.findOne({ _id: new ObjectId(id) });
+            res.json(result);
+        });
+
+        // Get the Teacher Created Quiz API 
+        app.get('/teacher/generate-quiz/:id', async(req, res)=>{
+            const id = req.params.id;
+            const result = await quizSet.findOne({ _id: new ObjectId(id) });
             res.json(result);
         });
 
@@ -471,7 +502,10 @@ async function run() {
                     return res.status(400).json({ status: false, message: "Invalid user ID" });
                 }
 
+                const user = await usersCollection.findOne({ _id: new ObjectId(id) })
                 const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+                await quizzesCollection.deleteMany({ email: user?.email })
+
 
                 if (result.deletedCount === 0) {
                     return res.status(404).json({ status: false, message: "User not found" });
@@ -805,12 +839,24 @@ async function run() {
                     }
                 }).toArray();
 
+                // Get quizzes solved this month
+                const quizzesSolvedThisMonth = await quizzesCollection.find({
+                    status: "solved",
+                    $expr: {
+                        $and: [
+                            { $gte: [{ $dateFromString: { dateString: "$created" } }, startOfMonth] },
+                            { $lt: [{ $dateFromString: { dateString: "$created" } }, startOfNextMonth] }
+                        ]
+                    }
+                }).toArray();
+
                 res.json({
                     status: true,
                     users: usersWithQuizCounts.length === 0 ? [] : usersWithQuizCounts,
                     quizzes: quizzesWithAuthorName.length === 0 ? [] : quizzesWithAuthorName,
                     solvedQuizzes: solvedQuizzes.length === 0 ? [] : solvedQuizzes,
                     monthWishUsers,
+                    quizzesSolvedThisMonth,
                     startOfMonth,
                     startOfNextMonth
                 });
