@@ -56,8 +56,11 @@ async function run() {
         // Reset Password Expire Collection
         const expireCollection = database.collection("expire");
 
-        // Quiz Set Collection For Teacher 
+        // Quiz Set Collection For Teacher Collection
         const quizSet = database.collection("quizset")
+
+        // Submit Teacher Quiz Collection 
+        const submitQuiz = database.collection("submitquiz")
 
         // verify token middleware
         const verifyToken = (req, res, next) => {
@@ -67,41 +70,40 @@ async function run() {
                 return res.status(401).json({ message: "Unauthorized Access!" });
             }
 
-            // get token from the headers 
+            // get token from the headers
             const token = req?.headers?.authorization;
             // console.log("Received Token", token);
 
             jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
                 if (err) {
-                    console.error('JWT Verification Error:', err.message);
+                    console.error("JWT Verification Error:", err.message);
                     return res.status(401).json({ message: err.message });
                 }
                 // console.log('Decoded Token:', decoded);
                 req.user = decoded;
                 next();
-            })
-        }
+            });
+        };
 
         // verify admin middleware after verify token
         const verifyAdmin = async (req, res, next) => {
             const email = req.user.email;
             const query = { email: email };
             const user = await usersCollection.findOne(query);
-            const isAdmin = user?.role === 'admin';
+            const isAdmin = user?.role === "admin";
             if (!isAdmin) {
-                return res.status(403).send({ message: 'forbidden access' });
+                return res.status(403).send({ message: "forbidden access" });
             }
             next();
-        }
+        };
 
         // JWT token create and remove APIS
-        // JWT token create API 
-        app.post('/jwt/create', async (req, res) => {
+        // JWT token create API
+        app.post("/jwt/create", async (req, res) => {
             const user = req.body;
-            const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '7h' });
-            res.send({ token })
-        })
-
+            const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "7h" });
+            res.send({ token });
+        });
 
         // Create quiz API
         app.post("/generate-quiz", async (req, res) => {
@@ -203,11 +205,17 @@ async function run() {
         app.get("/get-quiz-set/:id", async (req, res) => {
             const id = req.params.id;
             const result = await quizzesCollection.findOne({ _id: new ObjectId(id) });
+            if (!result) {
+                return res.json({
+                    status: false,
+                    message: "Quiz Not Found"
+                })
+            }
             res.json(result);
         });
 
         // Get the Teacher Created Quiz API 
-        app.get('/teacher/generate-quiz/:id', async(req, res)=>{
+        app.get('/teacher/generate-quiz/:id', async (req, res) => {
             const id = req.params.id;
             const result = await quizSet.findOne({ _id: new ObjectId(id) });
             res.json(result);
@@ -215,73 +223,145 @@ async function run() {
 
         // checking the quiz answer API
         app.post("/answer/checking", async (req, res) => {
-            try {
-                const { id, answers } = req.body;
-                let quizSet = await quizzesCollection.findOne({
-                    _id: new ObjectId(id),
-                });
+            const isTeacherCreated = req.query.teacherCreated
 
-                if (!quizSet) {
-                    return res.json({ status: false, message: "Quiz not found" });
-                }
+            if (isTeacherCreated) {
+                try {
+                    const body = req.body;
+                    const result = await submitQuiz.insertOne(body)
+                    const createdQuiz = await quizSet.findOne({ _id: new ObjectId(body?.id) })
+                    const parsedQuiz = createdQuiz?.parsedQuizData
+                    let userAnswer = await submitQuiz.findOne({ _id: new ObjectId(result?.insertedId) })
+                    const totalQuizInSet = parsedQuiz.length;
+                    let correctQuizAnswer = 0; // ✅ Initialize properly
 
-                const totalQuizInSet = quizSet.parsedQuizData.length;
-                let correctQuizAnswer = 0; // ✅ Initialize properly
+                    const updatePromises = userAnswer?.answers?.map((answer, index) => {
+                        const createdQuestion = parsedQuiz[index]
 
-                const updatePromises = answers.map((answer, index) => {
-                    const quizQuestion = quizSet.parsedQuizData[index];
+                        if (answer?.type == "Multiple Choice" || answer?.type == "true or false") {
+                            if (
+                                createdQuestion.question === answer.question &&
+                                createdQuestion.answer === answer.userAnswer
+                            ) {
+                                correctQuizAnswer++; // ✅ Synchronously update count
+                            }
 
-                    if (
-                        quizQuestion.question === answer.question &&
-                        quizQuestion.answer === answer.userAnswer
-                    ) {
-                        correctQuizAnswer++; // ✅ Synchronously update count
-                    }
+                            return submitQuiz.updateOne(
+                                {
+                                    _id: new ObjectId(result?.insertedId),
+                                    "answers.question": createdQuestion.question,
+                                },
+                                {
+                                    $set: {
+                                        "answers.$.status":
+                                            answer.userAnswer === createdQuestion.answer
+                                                ? "correct"
+                                                : "wrong",
+                                    },
+                                }
+                            );
+                        }
+                        else if(answer?.type == "Short Answer" || answer?.type == "fill in the blank") return 
+                    })
 
-                    return quizzesCollection.updateOne(
-                        {
-                            _id: new ObjectId(id),
-                            "parsedQuizData.question": quizQuestion.question,
-                        },
+                    await Promise.all(updatePromises)
+
+                    // ✅ Update correct & incorrect answer counts in the database
+                    await submitQuiz.updateOne(
+                        { _id: new ObjectId(result?.insertedId) },
                         {
                             $set: {
-                                "parsedQuizData.$.userAnswer": answer.userAnswer,
-                                "parsedQuizData.$.status":
-                                    answer.userAnswer === quizQuestion.answer
-                                        ? "correct"
-                                        : "wrong",
+                                correctQuizAnswer,
+                                wrongQuizAnswer: totalQuizInSet - correctQuizAnswer,
+                                status: "solved",
                             },
                         }
                     );
-                });
 
-                await Promise.all(updatePromises); // ✅ Wait for all updates
+                    // override quizSet
+                    userAnswer = await submitQuiz.findOne({ _id: new ObjectId(result?.insertedId) });
 
-                // ✅ Update correct & incorrect answer counts in the database
-                await quizzesCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    {
-                        $set: {
-                            correctQuizAnswer,
-                            wrongQuizAnswer: totalQuizInSet - correctQuizAnswer,
-                            status: "solved",
-                        },
+                    res.json({
+                        status: true,
+                        createdQuiz,
+                        userAnswer,
+                    })
+                }
+                catch (err) {
+                    console.error("❌ Error checking quiz:", err);
+                    res.status(500).json({ status: false, message: err.message });
+                }
+            }
+            else {
+                try {
+                    const { id, answers } = req.body;
+                    let quizSet = await quizzesCollection.findOne({
+                        _id: new ObjectId(id),
+                    });
+
+                    if (!quizSet) {
+                        return res.json({ status: false, message: "Quiz not found" });
                     }
-                );
 
-                // override quizSet
-                quizSet = await quizzesCollection.findOne({ _id: new ObjectId(id) });
+                    const totalQuizInSet = quizSet.parsedQuizData.length;
+                    let correctQuizAnswer = 0; // ✅ Initialize properly
 
-                res.json({
-                    status: true,
-                    totalQuizInSet,
-                    quizSet,
-                    correctQuizAnswer, // ✅ Now this should not be NaN
-                    wrongQuizAnswer: totalQuizInSet - correctQuizAnswer, // ✅ Ensure correct value
-                });
-            } catch (err) {
-                console.error("❌ Error checking quiz:", err);
-                res.status(500).json({ status: false, message: err.message });
+                    const updatePromises = answers.map((answer, index) => {
+                        const quizQuestion = quizSet.parsedQuizData[index];
+
+                        if (
+                            quizQuestion.question === answer.question &&
+                            quizQuestion.answer === answer.userAnswer
+                        ) {
+                            correctQuizAnswer++; // ✅ Synchronously update count
+                        }
+
+                        return quizzesCollection.updateOne(
+                            {
+                                _id: new ObjectId(id),
+                                "parsedQuizData.question": quizQuestion.question,
+                            },
+                            {
+                                $set: {
+                                    "parsedQuizData.$.userAnswer": answer.userAnswer,
+                                    "parsedQuizData.$.status":
+                                        answer.userAnswer === quizQuestion.answer
+                                            ? "correct"
+                                            : "wrong",
+                                },
+                            }
+                        );
+                    });
+
+                    await Promise.all(updatePromises); // ✅ Wait for all updates
+
+                    // ✅ Update correct & incorrect answer counts in the database
+                    await quizzesCollection.updateOne(
+                        { _id: new ObjectId(id) },
+                        {
+                            $set: {
+                                correctQuizAnswer,
+                                wrongQuizAnswer: totalQuizInSet - correctQuizAnswer,
+                                status: "solved",
+                            },
+                        }
+                    );
+
+                    // override quizSet
+                    quizSet = await quizzesCollection.findOne({ _id: new ObjectId(id) });
+
+                    res.json({
+                        status: true,
+                        totalQuizInSet,
+                        quizSet,
+                        correctQuizAnswer, // ✅ Now this should not be NaN
+                        wrongQuizAnswer: totalQuizInSet - correctQuizAnswer, // ✅ Ensure correct value
+                    });
+                }
+                catch (err) {
+                    console.error("❌ Error checking quiz:", err);
+                    res.status(500).json({ status: false, message: err.message });
+                }
             }
         });
 
@@ -289,9 +369,9 @@ async function run() {
         app.post("/signup", async (req, res) => {
             try {
                 const { sociallogin } = req.query;
+
                 if (sociallogin) {
                     const body = req.body;
-
                     const existingUser = await usersCollection.findOne({
                         email: body?.email,
                     });
@@ -300,7 +380,7 @@ async function run() {
                         return res.json({
                             status: false,
                             message: "User already exists, use another email address",
-                            data: result,
+                            data: null,
                         });
                     }
 
@@ -315,7 +395,7 @@ async function run() {
                     return res.json({
                         status: true,
                         message: "User added successfully",
-                        result,
+                        data: result,
                     });
                 } else {
                     const { password, ...user } = req.body;
@@ -327,12 +407,11 @@ async function run() {
                         return res.json({
                             status: false,
                             message: "User already exists, use another email address",
-                            data: result,
+                            data: null,
                         });
                     }
 
                     const hashedPass = await bcrypt.hash(password, 10);
-
                     const withRole = {
                         ...user,
                         password: hashedPass,
@@ -340,6 +419,7 @@ async function run() {
                         failedAttempts: 0,
                         block: false,
                     };
+
                     const insertResult = await usersCollection.insertOne(withRole);
                     return res.json({
                         status: true,
@@ -351,7 +431,7 @@ async function run() {
                 console.error("Error adding/updating user:", error);
                 res.status(500).json({
                     status: false,
-                    message: "Failed to add or update userr",
+                    message: "Failed to add or update user",
                     error: error.message,
                 });
             }
@@ -452,13 +532,15 @@ async function run() {
             });
         });
 
-        // update user info API 
-        app.patch('/user/update/profile/:id', async (req, res) => {
+        // update user info API
+        app.patch("/user/update/profile/:id", async (req, res) => {
             try {
                 const id = req.params.id;
 
                 if (!ObjectId.isValid(id)) {
-                    return res.status(400).json({ status: false, message: "Invalid user ID" });
+                    return res
+                        .status(400)
+                        .json({ status: false, message: "Invalid user ID" });
                 }
 
                 const body = req.body;
@@ -466,7 +548,7 @@ async function run() {
                     $set: {
                         username: body?.username,
                         phone: body?.phone,
-                    }
+                    },
                 };
 
                 const result = await usersCollection.updateOne(
@@ -475,94 +557,106 @@ async function run() {
                 );
 
                 if (result.matchedCount === 0) {
-                    return res.status(404).json({ status: false, message: "User not found" });
+                    return res
+                        .status(404)
+                        .json({ status: false, message: "User not found" });
                 }
 
                 res.status(200).json({
                     status: true,
                     message: "User profile updated successfully",
-                    result
+                    result,
                 });
             } catch (error) {
                 console.error("Error updating user profile:", error);
                 res.status(500).json({
                     status: false,
                     message: "Something went wrong",
-                    error: error.message
+                    error: error.message,
                 });
             }
         });
 
-        // delete user from db API 
-        app.delete('/user/delete/:id', async (req, res) => {
+        // delete user from db API
+        app.delete("/user/delete/:id", async (req, res) => {
             try {
                 const id = req.params.id;
 
                 if (!ObjectId.isValid(id)) {
-                    return res.status(400).json({ status: false, message: "Invalid user ID" });
+                    return res
+                        .status(400)
+                        .json({ status: false, message: "Invalid user ID" });
                 }
 
-                const user = await usersCollection.findOne({ _id: new ObjectId(id) })
                 const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
-                await quizzesCollection.deleteMany({ email: user?.email })
-
 
                 if (result.deletedCount === 0) {
-                    return res.status(404).json({ status: false, message: "User not found" });
+                    return res
+                        .status(404)
+                        .json({ status: false, message: "User not found" });
                 }
 
                 res.status(200).json({
                     status: true,
                     message: "User deleted successfully",
-                    result
+                    result,
                 });
             } catch (error) {
                 console.error("Error deleting user:", error);
                 res.status(500).json({
                     status: false,
                     message: "Something went wrong",
-                    error: error.message
+                    error: error.message,
                 });
             }
         });
 
-        // change role of user API 
-        app.patch('/user/role/change/:id', async (req, res) => {
+        // change role of user API
+        app.patch("/user/role/change/:id", async (req, res) => {
             try {
                 const id = req.params.id;
-                const user = await usersCollection.findOne({ _id: new ObjectId(id) })
+                const user = await usersCollection.findOne({ _id: new ObjectId(id) });
 
                 if (!ObjectId.isValid(id)) {
-                    return res.status(400).json({ status: false, message: "Invalid user ID" });
+                    return res
+                        .status(400)
+                        .json({ status: false, message: "Invalid user ID" });
                 }
 
                 if (!role) {
-                    return res.status(400).json({ status: false, message: "Role is required" });
+                    return res
+                        .status(400)
+                        .json({ status: false, message: "Role is required" });
                 }
 
                 const updatedDoc = {
                     $set: {
-                        role: user?.role == "admin" ? "user" : "admin"
-                    }
+                        role: user?.role == "admin" ? "user" : "admin",
+                    },
                 };
 
-                const result = await usersCollection.updateOne({ _id: new ObjectId(id) }, updatedDoc);
+                const result = await usersCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    updatedDoc
+                );
 
                 if (result.matchedCount === 0) {
-                    return res.status(404).json({ status: false, message: "User not found" });
+                    return res
+                        .status(404)
+                        .json({ status: false, message: "User not found" });
                 }
 
                 res.status(200).json({
                     status: true,
                     message: "User role updated successfully",
-                    result
+                    result,
                 });
             } catch (error) {
                 console.error("Error updating user role:", error);
                 res.status(500).json({
                     status: false,
                     message: "Something went wrong",
-                    error: error.message
+                    error: error.message,
                 });
             }
         });
@@ -797,37 +891,49 @@ async function run() {
             }
         });
 
-        // admin stats for showing data in admin dashboard API 
-        app.get('/admin/stats', async (req, res) => {
+        // admin stats for showing data in admin dashboard API
+        app.get("/admin/stats", async (req, res) => {
             try {
                 const users = await usersCollection.find().toArray();
                 const quizzes = await quizzesCollection.find().toArray();
-                const solvedQuizzes = await quizzesCollection.find({ status: "solved" }).toArray();
+                const solvedQuizzes = await quizzesCollection
+                    .find({ status: "solved" })
+                    .toArray();
 
-                const usersWithQuizCounts = await Promise.all(users.map(async (user) => {
-                    const quizCount = await quizzesCollection.countDocuments({ user: user.email });
-                    const lastActive = new Date(user.lastLoginTime);
-                    const now = new Date();
-                    const diffInHours = (now - lastActive) / (1000 * 60 * 60);
-                    const userStatus = diffInHours > 24 ? "offline" : "online";
-                    return {
-                        ...user,
-                        totalQuizzes: quizCount,
-                        userStatus
-                    };
-                }));
+                const usersWithQuizCounts = await Promise.all(
+                    users.map(async (user) => {
+                        const quizCount = await quizzesCollection.countDocuments({
+                            user: user.email,
+                        });
+                        const lastActive = new Date(user.lastLoginTime);
+                        const now = new Date();
+                        const diffInHours = (now - lastActive) / (1000 * 60 * 60);
+                        const userStatus = diffInHours > 24 ? "offline" : "online";
+                        return {
+                            ...user,
+                            totalQuizzes: quizCount,
+                            userStatus,
+                        };
+                    })
+                );
 
-                const quizzesWithAuthorName = await Promise.all(quizzes.map(async (quiz) => {
-                    const author = await usersCollection.findOne({ email: quiz.user });
-                    return {
-                        ...quiz,
-                        author: author?.username
-                    };
-                }));
+                const quizzesWithAuthorName = await Promise.all(
+                    quizzes.map(async (quiz) => {
+                        const author = await usersCollection.findOne({ email: quiz.user });
+                        return {
+                            ...quiz,
+                            author: author?.username,
+                        };
+                    })
+                );
 
                 const now = new Date();
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-                const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+                const startOfNextMonth = new Date(
+                    now.getFullYear(),
+                    now.getMonth() + 1,
+                    1
+                );
 
                 // This works for both string and Date creationTime
                 const monthWishUsers = await usersCollection.find({
@@ -839,24 +945,12 @@ async function run() {
                     }
                 }).toArray();
 
-                // Get quizzes solved this month
-                const quizzesSolvedThisMonth = await quizzesCollection.find({
-                    status: "solved",
-                    $expr: {
-                        $and: [
-                            { $gte: [{ $dateFromString: { dateString: "$created" } }, startOfMonth] },
-                            { $lt: [{ $dateFromString: { dateString: "$created" } }, startOfNextMonth] }
-                        ]
-                    }
-                }).toArray();
-
                 res.json({
                     status: true,
                     users: usersWithQuizCounts.length === 0 ? [] : usersWithQuizCounts,
                     quizzes: quizzesWithAuthorName.length === 0 ? [] : quizzesWithAuthorName,
                     solvedQuizzes: solvedQuizzes.length === 0 ? [] : solvedQuizzes,
                     monthWishUsers,
-                    quizzesSolvedThisMonth,
                     startOfMonth,
                     startOfNextMonth
                 });
@@ -941,7 +1035,6 @@ async function run() {
                 });
             }
         });
-
     } catch (error) {
         console.error("❌ MongoDB Connection Error:", error);
     }
@@ -954,3 +1047,4 @@ app.get("/", (req, res) => {
 });
 
 module.exports = app;
+
