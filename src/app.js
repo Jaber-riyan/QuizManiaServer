@@ -228,6 +228,13 @@ async function run() {
             if (isTeacherCreated) {
                 try {
                     const body = req.body;
+                    const submissionExist = await submitQuiz.findOne({ id: body?.id, user:body?.user })
+                    if(submissionExist){
+                        return res.json({
+                            status:false,
+                            message: "You Already Responded!"
+                        })
+                    }
                     const result = await submitQuiz.insertOne(body)
                     const createdQuiz = await quizSet.findOne({ _id: new ObjectId(body?.id) })
                     const parsedQuiz = createdQuiz?.parsedQuizData
@@ -237,7 +244,7 @@ async function run() {
                     const totalQuizInSet = parsedQuiz.length;
                     let correctQuizAnswer = 0; // ✅ Initialize properly
 
-                    const updatePromises = correctQuizSet?.answers?.map((answer, index) => {
+                    const updatePromises = correctQuizSet?.answers?.map(async (answer, index) => {
                         const createdQuestion = parsedQuiz[index]
 
                         if (answer?.type == "Multiple Choice" || answer?.type == "true or false") {
@@ -263,7 +270,81 @@ async function run() {
                                 }
                             );
                         }
-                        else if (answer?.type == "Short Answer" || answer?.type == "fill in the blank") return
+                        else {
+                            if (!createdQuestion.question === answer.question) {
+                                return
+                            }
+
+                            const prompt = `
+                                Analyze the given teacher's answer: "${createdQuestion?.answer}" and the user's answer: "${answer?.userAnswer}" based on the question type: "${answer?.type}".
+
+                                Rules:
+                                - If the type is "Short Answer", check if the semantic meaning matches. If it matches, output 'correct', otherwise 'incorrect'.
+                                - If the type is "fill in the blank", require an exact match (case-insensitive). If matched, output 'correct', otherwise 'incorrect'.
+
+                                Output Format:
+                                {
+                                    "output": "correct" or "incorrect"
+                                }
+
+                                Only output the JSON. No explanations, no extra text.
+                            `;
+
+
+                            // Call Gemini API to generate content
+                            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+                            const response = await model.generateContent([prompt]);
+
+                            const correctStatus = response.response.candidates[0].content.parts[0].text;
+                            // console.log("AI Given Question Answer : ", correctStatus);
+
+                            // **Extract JSON if wrapped in extra text**
+                            const jsonMatch = correctStatus.match(/```json([\s\S]*?)```/);
+                            const cleanJson = jsonMatch ? jsonMatch[1].trim() : quizData;
+
+                            // Parse the quiz data
+                            let parsedCorrectStatus;
+                            try {
+                                parsedCorrectStatus = JSON.parse(cleanJson);
+                            } catch (error) {
+                                console.error("❌ JSON Parsing Error:", error);
+                                throw new Error("Invalid JSON format received from AI.");
+                            }
+
+                            console.log(parsedCorrectStatus);
+
+                            if (parsedCorrectStatus?.output == "correct") {
+                                correctQuizAnswer++; // ✅ Synchronously update count
+                                return submitQuiz.updateOne(
+                                    {
+                                        _id: new ObjectId(result?.insertedId),
+                                        "answers.question": createdQuestion.question,
+                                    },
+                                    {
+                                        $set: {
+                                            "answers.$.status": "correct"
+                                        },
+                                    }
+                                );
+
+                            }
+                            if (parsedCorrectStatus?.output == "incorrect") {
+                                return submitQuiz.updateOne(
+                                    {
+                                        _id: new ObjectId(result?.insertedId),
+                                        "answers.question": createdQuestion.question,
+                                    },
+                                    {
+                                        $set: {
+                                            "answers.$.status": "wrong",
+                                        },
+                                    }
+                                );
+                            }
+
+                            // console.log(parsedCorrectStatus);
+                        }
                     })
 
                     await Promise.all(updatePromises)
@@ -1055,3 +1136,10 @@ app.get("/", (req, res) => {
 
 module.exports = app;
 
+
+
+/**
+ * Teacher Answer pamu : createdQuestion.answer
+ * User Answer pamu : answer.userAnswer
+ * Correct, Wrong
+ */
