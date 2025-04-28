@@ -231,11 +231,13 @@ async function run() {
                     const result = await submitQuiz.insertOne(body)
                     const createdQuiz = await quizSet.findOne({ _id: new ObjectId(body?.id) })
                     const parsedQuiz = createdQuiz?.parsedQuizData
-                    let userAnswer = await submitQuiz.findOne({ _id: new ObjectId(result?.insertedId) })
+
+                    let correctQuizSet = await submitQuiz.findOne({ _id: new ObjectId(result?.insertedId) })
+
                     const totalQuizInSet = parsedQuiz.length;
                     let correctQuizAnswer = 0; // ✅ Initialize properly
 
-                    const updatePromises = userAnswer?.answers?.map((answer, index) => {
+                    const updatePromises = correctQuizSet?.answers?.map((answer, index) => {
                         const createdQuestion = parsedQuiz[index]
 
                         if (answer?.type == "Multiple Choice" || answer?.type == "true or false") {
@@ -261,7 +263,7 @@ async function run() {
                                 }
                             );
                         }
-                        else if(answer?.type == "Short Answer" || answer?.type == "fill in the blank") return 
+                        else if (answer?.type == "Short Answer" || answer?.type == "fill in the blank") return
                     })
 
                     await Promise.all(updatePromises)
@@ -279,12 +281,17 @@ async function run() {
                     );
 
                     // override quizSet
-                    userAnswer = await submitQuiz.findOne({ _id: new ObjectId(result?.insertedId) });
+                    correctQuizSet = await submitQuiz.findOne({ _id: new ObjectId(result?.insertedId) });
 
                     res.json({
                         status: true,
-                        createdQuiz,
-                        userAnswer,
+                        teacherSolvedQuiz: true,
+                        quizSet: {
+                            createdQuiz,
+                            parsedQuizData: correctQuizSet,
+                            correctQuizAnswer, // ✅ Now this should not be NaN
+                        },
+                        wrongQuizAnswer: totalQuizInSet - correctQuizAnswer, // ✅ Ensure correct value
                     })
                 }
                 catch (err) {
