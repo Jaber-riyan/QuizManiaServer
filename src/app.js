@@ -107,77 +107,191 @@ async function run() {
 
         // Create quiz API
         app.post("/generate-quiz", async (req, res) => {
-            try {
-                const { user, quizCriteria } = req.body;
-
-                // **Improved Prompting for Strict JSON Response**
-
-                const prompt = `
-                    Generate a ${quizCriteria.difficulty} level quiz on "${quizCriteria.topic}" with ${quizCriteria.quizType} questions.
-                    - Number of Questions: ${quizCriteria.quantity}
-                    - Return ONLY a valid JSON array. No extra text.
-                    - Each question should have:
-                        - "type": (Multiple Choice / True or False)
-                        - "question": (Text of the question)
-                        - "options": (An array of choices, required only for "Multiple Choice" and "True/False" question types. For "True/False" questions, the allowed options are only ["True", "False"] but for multiple choice there should be no true or false as  options)
-                        - "answer": (Correct answer)
-                    
-                    Example Output:
-                    [
-                        {
-                            "type": "Multiple Choice",
-                            "question": "What is the capital of France?",
-                            "options": ["Berlin", "Paris", "Madrid", "Rome"],
-                            "answer": "Paris"
-                        }
-                    ]
-                    Do not include explanations, code blocks, or markdown. Just return raw JSON data.
-                `;
-
-                // Call Gemini API to generate content
-                const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-                const response = await model.generateContent([prompt]);
-
-                const quizData = response.response.candidates[0].content.parts[0].text;
-                // const demo = response.response
-
-                // console.log("🔹 Raw AI Response:", quizData);
-
-                // **Extract JSON if wrapped in extra text**
-                const jsonMatch = quizData.match(/```json([\s\S]*?)```/);
-                const cleanJson = jsonMatch ? jsonMatch[1].trim() : quizData;
-
-                // Parse the quiz data
-                let parsedQuizData;
+            const teacherAiCreated = req.query.teacherAiCreated
+            if (teacherAiCreated) {
                 try {
-                    parsedQuizData = JSON.parse(cleanJson);
-                } catch (error) {
-                    console.error("❌ JSON Parsing Error:", error);
-                    throw new Error("Invalid JSON format received from AI.");
+                    const { user, quizCriteria, quizCreatedType } = req.body;
+
+                    // **Improved Prompting for Strict JSON Response**
+
+                    const prompt = `
+                        Generate a ${quizCriteria.difficulty} level quiz on "${quizCriteria.topic}" with mixed type ${quizCriteria.quizType} questions.
+                        - Number of Questions: ${quizCriteria.quantity}
+                        - Return ONLY a valid JSON array. No extra text.
+                        - Each question should have:
+                            - "type": (Multiple Choice / True or False / "fill in the blanks" / "Short Answer")
+                            - "question": (Text of the question)
+                            - "options": (An array of choices, required only for "Multiple Choice" and "True/False" question types. For "True/False" questions, the allowed options are only ["True", "False"] but for multiple choice there should be no true or false as  options, fill in the blanks options will be N/A and Short Answer options will be N/A)
+                            - "answer": Correct answer, (in fill in the blanks and short question answer could be many)
+                            - "points" : 1
+                            - "explanation" : "answer explanation" 
+                        
+                        Example Output:
+                        [
+                            {
+                                "question": "5+3",
+                                "answer": "8",
+                                "type": "Multiple Choice",
+                                "options": [
+                                    "8",
+                                    "2",
+                                    "4",
+                                    "3"
+                                ],
+                                "points": 1,
+                                "explanation" : "answer explanation"
+                            },
+                            {
+                                "question": "Math is easy",
+                                "answer": "true",
+                                "type": "true or false",
+                                "options": [
+                                    "true",
+                                    "false"
+                                ],
+                                "points": 1,
+                                "explanation" : "answer explanation"
+                            },
+                            {
+                                "question": "France capital is [blank]",
+                                "answer": "Canada",
+                                "type": "fill in the blank",
+                                "options": "N/A",
+                                "points": 1,
+                                "explanation" : "answer explanation"
+                            },
+                            {
+                                "question": "Describe anything about math",
+                                "answer": "only relevant question",
+                                "type": "Short Answer",
+                                "options": "N/A",
+                                "points": 1,
+                                "explanation" : "answer explanation"
+                            }
+                        ]
+                        Do not include explanations, code blocks, or markdown. Just return raw JSON data.
+                    `;
+
+                    // Call Gemini API to generate content
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+                    const response = await model.generateContent([prompt]);
+
+                    const quizData = response.response.candidates[0].content.parts[0].text;
+                    // const demo = response.response
+
+                    // console.log("🔹 Raw AI Response:", quizData);
+
+                    // **Extract JSON if wrapped in extra text**
+                    const jsonMatch = quizData.match(/```json([\s\S]*?)```/);
+                    const cleanJson = jsonMatch ? jsonMatch[1].trim() : quizData;
+
+                    // Parse the quiz data
+                    let parsedQuizData;
+                    try {
+                        parsedQuizData = JSON.parse(cleanJson);
+                    } catch (error) {
+                        console.error("❌ JSON Parsing Error:", error);
+                        throw new Error("Invalid JSON format received from AI.");
+                    }
+
+                    const updatedData = {
+                        user,
+                        quizCriteria,
+                        parsedQuizData,
+                        quizCreatedType
+                    };
+
+                    const result = await quizSet.insertOne(updatedData);
+
+                    // Send the response
+                    res.json({
+                        status: true,
+                        message: "✅ Successfully generated quiz from AI",
+                        result,
+                        user,
+                        quizCriteria,
+                        quizzes: parsedQuizData,
+                    });
+                } catch (err) {
+                    console.error("❌ Error generating quiz:", err);
+                    res.status(500).json({ status: false, message: err.message });
                 }
-
-                const updatedData = {
-                    user,
-                    quizCriteria,
-                    parsedQuizData,
-                };
-
-                const result = await quizzesCollection.insertOne(updatedData);
-
-                // Send the response
-                res.json({
-                    status: true,
-                    message: "✅ Successfully generated quiz from AI",
-                    result,
-                    user,
-                    quizCriteria,
-                    quizzes: parsedQuizData,
-                });
-            } catch (err) {
-                console.error("❌ Error generating quiz:", err);
-                res.status(500).json({ status: false, message: err.message });
             }
+            else {
+                try {
+                    const { user, quizCriteria } = req.body;
+
+                    // **Improved Prompting for Strict JSON Response**
+
+                    const prompt = `
+                        Generate a ${quizCriteria.difficulty} level quiz on "${quizCriteria.topic}" with ${quizCriteria.quizType} questions.
+                        - Number of Questions: ${quizCriteria.quantity}
+                        - Return ONLY a valid JSON array. No extra text.
+                        - Each question should have:
+                            - "type": (Multiple Choice / True or False)
+                            - "question": (Text of the question)
+                            - "options": (An array of choices, required only for "Multiple Choice" and "True/False" question types. For "True/False" questions, the allowed options are only ["True", "False"] but for multiple choice there should be no true or false as  options)
+                            - "answer": (Correct answer)
+                        
+                        Example Output:
+                        [
+                            {
+                                "type": "Multiple Choice",
+                                "question": "What is the capital of France?",
+                                "options": ["Berlin", "Paris", "Madrid", "Rome"],
+                                "answer": "Paris"
+                            }
+                        ]
+                        Do not include explanations, code blocks, or markdown. Just return raw JSON data.
+                    `;
+
+                    // Call Gemini API to generate content
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+                    const response = await model.generateContent([prompt]);
+
+                    const quizData = response.response.candidates[0].content.parts[0].text;
+                    // const demo = response.response
+
+                    // console.log("🔹 Raw AI Response:", quizData);
+
+                    // **Extract JSON if wrapped in extra text**
+                    const jsonMatch = quizData.match(/```json([\s\S]*?)```/);
+                    const cleanJson = jsonMatch ? jsonMatch[1].trim() : quizData;
+
+                    // Parse the quiz data
+                    let parsedQuizData;
+                    try {
+                        parsedQuizData = JSON.parse(cleanJson);
+                    } catch (error) {
+                        console.error("❌ JSON Parsing Error:", error);
+                        throw new Error("Invalid JSON format received from AI.");
+                    }
+
+                    const updatedData = {
+                        user,
+                        quizCriteria,
+                        parsedQuizData,
+                    };
+
+                    const result = await quizzesCollection.insertOne(updatedData);
+
+                    // Send the response
+                    res.json({
+                        status: true,
+                        message: "✅ Successfully generated quiz from AI",
+                        result,
+                        user,
+                        quizCriteria,
+                        quizzes: parsedQuizData,
+                    });
+                } catch (err) {
+                    console.error("❌ Error generating quiz:", err);
+                    res.status(500).json({ status: false, message: err.message });
+                }
+            }
+
         });
 
         // Create quiz API for Teacher API
@@ -228,10 +342,10 @@ async function run() {
             if (isTeacherCreated) {
                 try {
                     const body = req.body;
-                    const submissionExist = await submitQuiz.findOne({ id: body?.id, user:body?.user })
-                    if(submissionExist){
+                    const submissionExist = await submitQuiz.findOne({ id: body?.id, user: body?.user })
+                    if (submissionExist) {
                         return res.json({
-                            status:false,
+                            status: false,
                             message: "You Already Responded!"
                         })
                     }
@@ -279,8 +393,8 @@ async function run() {
                                 Analyze the given teacher's answer: "${createdQuestion?.answer}" and the user's answer: "${answer?.userAnswer}" based on the question type: "${answer?.type}".
 
                                 Rules:
-                                - If the type is "Short Answer", check if the semantic meaning matches. If it matches, output 'correct', otherwise 'incorrect'.
-                                - If the type is "fill in the blank", require an exact match (case-insensitive). If matched, output 'correct', otherwise 'incorrect'.
+                                    - If the type is "Short Answer", check if the semantic meaning matches. If it matches, output 'correct', otherwise 'incorrect'.
+                                    - If the type is "fill in the blank", require an exact match (case-insensitive). If matched, output 'correct', otherwise 'incorrect'.
 
                                 Output Format:
                                 {
