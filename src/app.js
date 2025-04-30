@@ -9,6 +9,8 @@ const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 const bcrypt = require("bcrypt");
 const nodemailer = require("nodemailer");
+const favicon = require('serve-favicon');
+const path = require('path')
 
 const app = express();
 app.use(express.json());
@@ -25,6 +27,9 @@ app.use(
     })
 );
 app.use(cookieParser());
+
+// Serve favicon
+app.use(favicon(path.join(__dirname, 'public', 'favicon.ico')));
 
 // MongoDB connection
 const uri = `mongodb+srv://${process.env.USER_NAME}:${process.env.PASSWORD}@cluster0.4ayta.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -122,7 +127,7 @@ async function run() {
                             - "type": (Multiple Choice / True or False / "fill in the blanks" / "Short Answer")
                             - "question": (Text of the question)
                             - "options": (An array of choices, required only for "Multiple Choice" and "True/False" question types. For "True/False" questions, the allowed options are only ["True", "False"] but for multiple choice there should be no true or false as  options, fill in the blanks options will be N/A and Short Answer options will be N/A)
-                            - "answer": Correct answer, (in fill in the blanks and short question answer could be many)
+                            - "answer": Correct answer
                             - "points" : 1
                             - "explanation" : "answer explanation" 
                         
@@ -173,7 +178,7 @@ async function run() {
                     `;
 
                     // Call Gemini API to generate content
-                    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
                     const response = await model.generateContent([prompt]);
 
@@ -247,7 +252,7 @@ async function run() {
                     `;
 
                     // Call Gemini API to generate content
-                    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
                     const response = await model.generateContent([prompt]);
 
@@ -404,9 +409,8 @@ async function run() {
                                 Only output the JSON. No explanations, no extra text.
                             `;
 
-
                             // Call Gemini API to generate content
-                            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+                            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
                             const response = await model.generateContent([prompt]);
 
@@ -1162,6 +1166,42 @@ async function run() {
                 res.status(500).json({ status: false, message: "Server error" });
             }
         });
+
+        // teacher stats for showing data in teacher dashboard API 
+        app.get('/teacher/stats', async (req, res) => {
+            try {
+                const teacherEmail = req.query.teacherEmail
+                const isNotTeacherExist = await usersCollection.findOne({ email: teacherEmail, role: "teacher" })
+                if (!isNotTeacherExist) {
+                    return res.json({
+                        status: false,
+                        message: "This person in not teacher?"
+                    })
+                }
+
+                const createdQuizzes = await quizSet.find({ user: teacherEmail }).toArray()
+
+                const withAttempts = await Promise.all(
+                    createdQuizzes.map(async (quiz) => {
+                        const totalAttempt = await submitQuiz.find({ id: quiz._id.toString() }).toArray();
+                        return{
+                            ...quiz,
+                            totalAttempt:totalAttempt.length
+                        }
+                    })
+                )
+
+                res.json({
+                    status: true,
+                    isNotTeacherExist,
+                    withAttempts
+                })
+
+            }
+            catch (err) {
+                res.status(500).json({ status: false, message: err.message });
+            }
+        })
 
         // user stats for showing data in user dashboard API
         app.get("/user/stats/:email", async (req, res) => {
